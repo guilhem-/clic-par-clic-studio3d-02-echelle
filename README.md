@@ -141,7 +141,8 @@ service `studio`, mêmes outils MCP) :
 - Module précédent : **Un studio 3D pour toute l'organisation** — dépôt
   [`clic-par-clic-studio3d-01-studio-mcp`](https://github.com/guilhem-/clic-par-clic-studio3d-01-studio-mcp).
 - Module suivant : **Observer le studio avec Grafana** (mesures Prometheus, tableau de bord et
-  alerte provisionnés par fichiers) — dépôt `clic-par-clic-studio3d-03-grafana` (à venir).
+  alerte provisionnés par fichiers) — dépôt
+  [`clic-par-clic-studio3d-03-grafana`](https://github.com/guilhem-/clic-par-clic-studio3d-03-grafana).
 
 ## Licence
 
