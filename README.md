@@ -1,151 +1,151 @@
-# Passer le studio 3D à l'échelle — Redis, workers Blender et KEDA
+# Scaling up the 3D studio — Redis, Blender workers and KEDA
 
-Code de la démonstration du module 2 de la série « Clic par clic » **Créer un service d'IA
-compatible agentique : le studio 3D**.
+Code for module 2 of the “Click by Click” series **Building an agent-ready AI service: the 3D studio**
+(also published in French as « Clic par clic » and in German as « Klick für Klick »).
 
-Vidéo : {{video}}
+Video: {{video}}
 
-## But
+## Goal
 
-Le studio du module 1 tenait sur un seul pod : un Blender, une file en mémoire, perdue au moindre
-redémarrage. Ce dépôt le fait passer à l'échelle **sans que rien ne change pour Open WebUI** (même
-service `studio`, mêmes outils MCP) :
+The module 1 studio fitted in a single pod: one Blender, an in-memory queue, lost at the slightest
+restart. This repository scales it up **without anything changing for Open WebUI** (same `studio`
+service, same MCP tools):
 
-- le **serveur MCP** tourne en deux copies **sans session** (`stateless_http=True`) : n'importe
-  laquelle répond, aucune ne garde d'état en mémoire ;
-- tout l'état vit dans **Redis** : compteur, une table par demande, file d'attente, liste des
-  demandes en cours, charge ;
-- les **workers Blender** vont eux-mêmes chercher le travail quand ils sont libres (`BLMOVE`
-  file → en cours, atomique) : pas de répartiteur réseau, un rendu à la fois par worker ;
-- un **battement de cœur** (clé Redis renouvelée toutes les 3 s, expirant en 10 s) : si un worker
-  disparaît en plein rendu, le serveur remet sa demande en tête de file ;
-- **KEDA** règle le nombre de workers selon la liste `studio:charge` (une entrée par demande en
-  attente ou en cours) : de zéro à quatre, retour à zéro quand tout est fini.
+- the **MCP server** runs as two **stateless** copies (`stateless_http=True`): any copy answers,
+  none keeps state in memory;
+- all the state lives in **Redis**: counter, one hash per request, queue, list of requests in
+  progress, load;
+- the **Blender workers** fetch the work themselves when they are free (`BLMOVE` queue →
+  processing, atomic): no network load balancer, one render at a time per worker;
+- a **heartbeat** (Redis key renewed every 3 s, expiring after 10 s): if a worker disappears in the
+  middle of a render, the server puts its request back at the head of the queue;
+- **KEDA** sets the number of workers from the `studio:load` list (one entry per request waiting
+  or running): from zero to four, back to zero when everything is done.
 
-## Contenu
+## Contents
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `studio/commun.py` | Ce que partagent serveur et workers : clés Redis, connexion, liens signés |
-| `studio/api.py` | Serveur MCP sans session : outils `soumettre_rendu`, `etat_rendu`, `mes_rendus`, rendus signés `/r/…`, santé `/sante`, surveillance des demandes orphelines |
-| `studio/travailleur.py` | Worker : boucle `BLMOVE`, rendu par un Blender neuf sans interface, battement de cœur, arrêt propre sur `SIGTERM` |
-| `studio/rendu.py` | Exécuté par Blender : construit la scène, ajoute caméra et lumière au besoin, rend l'image, exporte le GLB (inchangé depuis le module 1) |
-| `studio/Dockerfile` | Une image pour les deux rôles : Python 3.12, Blender 5.2 (miroir officiel, empreinte SHA-256 vérifiée), client Redis |
-| `k8s-echelle.yaml` | Redis, serveur MCP ×2, service `studio`, workers (0 copie au départ), `ScaledObject` KEDA, publication des rendus, règles réseau |
-| `open-webui/` | En-tête d'identité de la connexion MCP et prompt système du modèle « Studio 3D » |
-| `essai/demandes.sh` | Envoie quatre demandes au nom de deux utilisateurs, comme Open WebUI le ferait |
-| `.env.example` | Variables à renseigner (jeton partagé, mot de passe Redis), sans valeur |
+| `studio/common.py` | What the server and the workers share: Redis keys, connection, signed links |
+| `studio/api.py` | Stateless MCP server: tools `submit_render`, `render_status`, `my_renders`, signed renders `/r/…`, health check `/health`, watch over orphan requests |
+| `studio/worker.py` | Worker: `BLMOVE` loop, render by a fresh headless Blender, heartbeat, clean stop on `SIGTERM` |
+| `studio/render.py` | Run by Blender: builds the scene, adds a camera and a light if needed, renders the image, exports the GLB (unchanged since module 1) |
+| `studio/Dockerfile` | One image for both roles: Python 3.12, Blender 5.2 (official mirror, SHA-256 checksum verified), Redis client |
+| `k8s-scale.yaml` | Redis, MCP server ×2, `studio` service, workers (0 copies to start with), KEDA `ScaledObject`, publishing of the renders, network rules |
+| `open-webui/` | Identity header of the MCP connection and system prompt of the “Studio 3D” model |
+| `test/requests.sh` | Sends four requests on behalf of two users, as Open WebUI would |
+| `.env.example` | Variables to fill in (shared token, Redis password), without any value |
 
-## Prérequis
+## Prerequisites
 
-- Le studio du **module 1** et sa connexion dans Open WebUI (dépôt
-  [`clic-par-clic-studio3d-01-studio-mcp`](https://github.com/guilhem-/clic-par-clic-studio3d-01-studio-mcp)) :
-  ce module en part. On peut aussi partir de zéro en suivant les étapes 4 et 5 du README du module 1
-  pour la connexion et le modèle.
-- Docker, `kubectl` et un cluster Kubernetes. La vidéo utilise **k3d** (cluster `tterm`, Traefik
-  publié sur le port 8080 de la machine).
-- **KEDA 2.21** (installé à l'étape 2).
-- Environ 2 processeurs et 2 Go de mémoire par worker (quatre workers au plus).
+- The **module 1** studio and its connection in Open WebUI (repository
+  [`clic-par-clic-studio3d-01-studio-mcp`](https://github.com/guilhem-/clic-par-clic-studio3d-01-studio-mcp)):
+  this module starts from there. You can also start from scratch by following steps 4 and 5 of the
+  module 1 README for the connection and the model.
+- Docker, `kubectl` and a Kubernetes cluster. The video uses **k3d** (cluster `tterm`, Traefik
+  published on port 8080 of the machine).
+- **KEDA 2.21** (installed in step 2).
+- About 2 CPUs and 2 GB of memory per worker (four workers at most).
 
-## Installation pas à pas
+## Step-by-step installation
 
-1. **Image** (serveur et workers partagent la même) :
+1. **Image** (the server and the workers share it):
 
    ```bash
    docker build -t studio3d:2 studio
-   k3d image import studio3d:2 -c tterm      # k3d ; sinon, poussez l'image dans votre registre
+   k3d image import studio3d:2 -c tterm      # k3d; otherwise, push the image to your registry
    ```
 
-2. **KEDA**, une fois par cluster :
+2. **KEDA**, once per cluster:
 
    ```bash
    kubectl apply --server-side -f https://github.com/kedacore/keda/releases/download/v2.21.0/keda-2.21.0.yaml
    kubectl -n keda rollout status deployment/keda-operator
    ```
 
-3. **Secrets.** Copiez `.env.example` en `.env`, renseignez `STUDIO_JETON` (celui du module 1) et
-   `REDIS_MOT_DE_PASSE` (par exemple `openssl rand -hex 24`), puis :
+3. **Secrets.** Copy `.env.example` to `.env`, fill in `STUDIO_TOKEN` (the one from module 1) and
+   `REDIS_PASSWORD` (for example `openssl rand -hex 24`), then:
 
    ```bash
    set -a; . ./.env; set +a
    kubectl create namespace studio3d --dry-run=client -o yaml | kubectl apply -f -
    kubectl -n studio3d create secret generic studio \
-     --from-literal=jeton=$STUDIO_JETON --from-literal=redis=$REDIS_MOT_DE_PASSE \
+     --from-literal=token=$STUDIO_TOKEN --from-literal=redis=$REDIS_PASSWORD \
      --dry-run=client -o yaml | kubectl apply -f -
    ```
 
-4. **Du studio simple au studio à l'échelle.** Retirez le déploiement et la règle réseau du
-   module 1 (le service `studio` est repris tel quel), puis appliquez le manifeste :
+4. **From the simple studio to the scaled studio.** Remove the module 1 deployment and network
+   rule (the `studio` service is kept as is), then apply the manifest:
 
    ```bash
-   kubectl -n studio3d delete deployment/studio networkpolicy/studio-sans-sortie --ignore-not-found
-   kubectl apply -f k8s-echelle.yaml
+   kubectl -n studio3d delete deployment/studio networkpolicy/studio-no-egress --ignore-not-found
+   kubectl apply -f k8s-scale.yaml
    kubectl -n studio3d rollout status deployment/studio-api
    ```
 
-   Adaptez dans `k8s-echelle.yaml` l'adresse publique des rendus (`STUDIO_PUBLIC_URL`, hôte de
-   l'`Ingress`) à votre cluster.
+   In `k8s-scale.yaml`, adapt the public address of the renders (`STUDIO_PUBLIC_URL`, `Ingress`
+   host) to your cluster.
 
-5. **Open WebUI** : rien à changer si la connexion « Studio 3D » du module 1 existe (même URL
-   `http://studio.studio3d.svc.cluster.local:8000/mcp`). Pour la démonstration de la vidéo, le
-   prompt système du modèle est `open-webui/consignes-modele.txt` (il ajoute la liste des rendus
-   avec le worker de chacun).
+5. **Open WebUI**: nothing to change if the module 1 “Studio 3D” connection exists (same URL
+   `http://studio.studio3d.svc.cluster.local:8000/mcp`, same `X-User-Email` header). For the demo of
+   the video, the model's system prompt is `open-webui/system-prompt.txt` (it adds the list of
+   renders with the worker of each one).
 
-6. **Essai.** Dans un terminal, suivez les workers :
+6. **Try it.** In one terminal, follow the workers:
 
    ```bash
-   kubectl -n studio3d get pods -l app=studio-travailleur -w
+   kubectl -n studio3d get pods -l app=studio-worker -w
    ```
 
-   Dans un autre, ouvrez un accès local et envoyez des demandes :
+   In another one, open a local access and send requests:
 
    ```bash
    kubectl -n studio3d port-forward svc/studio 8000:8000 &
-   ./essai/demandes.sh
+   ./test/requests.sh
    ```
 
-   En même temps, demandez deux rendus depuis Open WebUI. KEDA démarre les workers en quelques
-   secondes. Pour simuler une panne, supprimez un worker en plein rendu :
+   At the same time, ask for two renders from Open WebUI. KEDA starts the workers within seconds.
+   To simulate a failure, delete a worker in the middle of a render:
 
    ```bash
-   kubectl -n studio3d delete pod <nom-du-worker> --grace-period=0 --force
+   kubectl -n studio3d delete pod <worker-name> --grace-period=0 --force
    ```
 
-   Une quinzaine de secondes plus tard, sa demande repasse « en attente » puis est reprise par un
-   autre worker (`curl http://127.0.0.1:8000/sante`). Une trentaine de secondes après le dernier
-   rendu, les workers s'arrêtent jusqu'à zéro.
+   About fifteen seconds later, its request goes back to “queued”, then is taken over by another
+   worker (`curl http://127.0.0.1:8000/health`). About thirty seconds after the last render, the
+   workers stop, down to zero.
 
-## Points à connaître
+## Good to know
 
-- **KEDA et plusieurs déclencheurs** : KEDA retient le plus grand, pas la somme. D'où une seule
-  liste, `studio:charge`, qui compte les demandes en attente **et** en cours.
-- **Arrêt d'un worker** : `terminationGracePeriodSeconds: 120` ; sur `SIGTERM`, le worker finit
-  son rendu avant de s'arrêter. Une suppression forcée (`--force`) simule une vraie panne.
-- **Règles réseau** : le serveur et les workers ne joignent que Redis (et la résolution de noms) ;
-  Redis n'accepte que le studio et KEDA. Elles ne s'appliquent que si le réseau du cluster gère les
-  `NetworkPolicy` (c'est le cas de k3d).
-- **`utilisateur_id` et `studio:notifications`** : prévus pour la série suivante (notification de
-  l'utilisateur dans Open WebUI) ; sans en-tête `X-Utilisateur-Id`, ils restent inutilisés.
+- **KEDA and several triggers**: KEDA keeps the largest value, not the sum. Hence a single list,
+  `studio:load`, which counts the requests waiting **and** running.
+- **Stopping a worker**: `terminationGracePeriodSeconds: 120`; on `SIGTERM`, the worker finishes
+  its render before stopping. A forced deletion (`--force`) simulates a real failure.
+- **Network rules**: the server and the workers only reach Redis (and name resolution); Redis only
+  accepts the studio and KEDA. They only apply if your cluster network supports `NetworkPolicy`
+  (k3d does).
+- **`user_id` and `studio:notifications`**: meant for the next series (notifying the user in
+  Open WebUI); without an `X-User-Id` header, they stay unused.
 
-## Sécurité et production
+## Security and production
 
-- Le point MCP (`/mcp`) n'est pas publié hors du cluster ; seuls les rendus (`/r/…`) le sont, par
-  des liens signés (HMAC).
-- Limites de cet exemple : Redis garde aussi les fichiers (24 h) ; le code écrit par le modèle
-  s'exécute dans le worker, qui peut joindre Redis. En production : stockage objet pour les
-  fichiers, Blender isolé dans un conteneur sans réseau, priorités par groupe d'utilisateurs,
-  cartes graphiques pour les rendus, secrets dans votre coffre.
+- The MCP endpoint (`/mcp`) is not published outside the cluster; only the renders (`/r/…`) are,
+  through signed links (HMAC).
+- Limits of this example: Redis also keeps the files (24 h); the code written by the model runs in
+  the worker, which can reach Redis. In production: object storage for the files, Blender isolated
+  in a container with no network, priorities per user group, GPUs for the renders, secrets in your
+  vault.
 
-## Suite de la série
+## Next in the series
 
-- Module précédent : **Un studio 3D pour toute l'organisation** — dépôt
+- Previous module: **A 3D studio for the whole organization** — repository
   [`clic-par-clic-studio3d-01-studio-mcp`](https://github.com/guilhem-/clic-par-clic-studio3d-01-studio-mcp).
-- Module suivant : **Observer le studio avec Grafana** (mesures Prometheus, tableau de bord et
-  alerte provisionnés par fichiers) — dépôt
+- Next module: **Monitoring the studio with Grafana** (Prometheus metrics, dashboard and alert
+  provisioned from files) — repository
   [`clic-par-clic-studio3d-03-grafana`](https://github.com/guilhem-/clic-par-clic-studio3d-03-grafana).
 
-## Licence
+## License
 
-MIT, voir [`LICENSE`](LICENSE). Blender est distribué sous licence GPL par la Blender Foundation ;
-Redis et KEDA sont des projets indépendants. Cette série est indépendante des éditeurs des
-logiciels présentés.
+MIT, see [`LICENSE`](LICENSE). Blender is distributed under the GPL license by the Blender Foundation;
+Redis and KEDA are independent projects. This series is independent of the publishers of the
+software shown.
